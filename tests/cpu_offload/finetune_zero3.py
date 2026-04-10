@@ -24,7 +24,32 @@ from transformers import (
 )
 from deepspeed import comm as dist
 
+import ctypes
+import json
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+# nsys profiler control via cudaProfilerApi range.
+# Active only when the script is launched with:
+#   nsys profile --capture-range=cudaProfilerApi ...
+# and --profile is passed to this script.
+try:
+    _libcudart = ctypes.CDLL("libcudart.so")
+    _NSYS_AVAILABLE = True
+except OSError:
+    _libcudart = None
+    _NSYS_AVAILABLE = False
+
+
+def nsys_start():
+    if _NSYS_AVAILABLE:
+        _libcudart.cudaProfilerStart()
+
+
+def nsys_stop():
+    if _NSYS_AVAILABLE:
+        _libcudart.cudaProfilerStop()
+
 
 def setup_logger(rank: int = 0, log_level: str = "INFO") -> logging.Logger:
     logger = logging.getLogger("finetune_zero3")
@@ -41,7 +66,7 @@ def setup_logger(rank: int = 0, log_level: str = "INFO") -> logging.Logger:
         )
         handler.setFormatter(formatter)
         logger.addHandler(handler)
-    
+
     return logger
 
 # Constants
@@ -61,10 +86,10 @@ def get_parameter_count(parameter: torch.nn.Parameter) -> int:
 
 
 def estimate_transformer_tflops(
-    seq_len: int, 
-    model_size: int, 
-    num_layers: int, 
-    hidden_size: int, 
+    seq_len: int,
+    model_size: int,
+    num_layers: int,
+    hidden_size: int,
     use_activation_checkpointing: bool = False
 ) -> float:
     """
@@ -79,36 +104,36 @@ def estimate_transformer_tflops(
 
 
 def preprocess_alpaca_example(
-    example: Dict[str, str], 
-    tokenizer: AutoTokenizer, 
+    example: Dict[str, str],
+    tokenizer: AutoTokenizer,
     max_length: int = 2048
 ) -> Dict[str, Any]:
     prompt = ALPACA_INSTRUCTION_TEMPLATE.format(instruction=example['instruction'])
-    
+
     if example.get("input", "").strip():
         prompt += ALPACA_INPUT_TEMPLATE.format(input=example['input'])
-    
+
     prompt += ALPACA_RESPONSE_TEMPLATE.format(output=example['output'])
-    
+
     tokenized = tokenizer(
-        prompt, 
-        truncation=True, 
-        max_length=max_length, 
+        prompt,
+        truncation=True,
+        max_length=max_length,
         padding="max_length",
         return_tensors=None
     )
-    
+
     tokenized["labels"] = tokenized["input_ids"].copy()
-    
+
     return tokenized
 
 
 def detect_moe_model(model: AutoModelForCausalLM, model_name: str) -> bool:
     moe_config_attrs = [
-        'num_local_experts', 'moe_layers', 'num_experts', 
+        'num_local_experts', 'moe_layers', 'num_experts',
         'expert_capacity', 'router_aux_loss_coef'
     ]
-    
+
     for attr in moe_config_attrs:
         if hasattr(model.config, attr):
             return True
@@ -126,24 +151,30 @@ def create_experiment_name(args: argparse.Namespace) -> str:
 
 def load_tokenizer(model_name: str, logger: logging.Logger) -> AutoTokenizer:
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         logger.debug(f"Set pad_token to eos_token: {tokenizer.eos_token}")
-    
+
     return tokenizer
 
 
 def load_model(model_name: str, attn_implementation: str, logger: logging.Logger) -> AutoModelForCausalLM:
     logger.debug(f"Loading model: {model_name}")
     logger.debug(f"Attention implementation: {attn_implementation}")
-    
+
+    if model_name.startswith("/") and not os.path.isdir(model_name):
+        raise ValueError(
+            f"Local model path does not exist: '{model_name}'\n"
+            "Make sure $MODELS_PATH is set correctly before running the script."
+        )
+
     model = AutoModelForCausalLM.from_pretrained(
-        model_name, 
+        model_name,
         torch_dtype=torch.bfloat16,
         attn_implementation=attn_implementation
     )
-    
+
     return model
 
 
@@ -161,25 +192,25 @@ def setup_model_training(model: torch.nn.Module, use_activation_checkpointing: b
 def create_optimizer(model: AutoModelForCausalLM) -> Any:
     from deepspeed.ops.adam import DeepSpeedCPUAdam
     optimizer = DeepSpeedCPUAdam(
-        model.parameters(), 
-        lr=DEFAULT_OPTIMIZER_LR, 
+        model.parameters(),
+        lr=DEFAULT_OPTIMIZER_LR,
         betas=DEFAULT_OPTIMIZER_BETAS
     )
     return optimizer
 
 
 def load_and_preprocess_dataset(
-    dataset_name: str, 
-    dataset_percentage: float, 
-    tokenizer: AutoTokenizer, 
+    dataset_name: str,
+    dataset_percentage: float,
+    tokenizer: AutoTokenizer,
     max_length: int,
     logger: logging.Logger
 ) -> Tuple[Any, DataLoader]:
     logger.debug(f"Loading dataset: {dataset_name}")
-    
+
     dataset = load_dataset(dataset_name)
     original_size = len(dataset["train"])
-    
+
     if dataset_percentage < 100.0:
         subset_size = int(original_size * dataset_percentage / 100.0)
         dataset["train"] = dataset["train"].select(range(subset_size))
@@ -188,20 +219,20 @@ def load_and_preprocess_dataset(
         logger.debug(f"Using full dataset: {original_size} examples")
 
     logger.debug("Tokenizing dataset...")
-    
+
     tokenized_dataset = dataset["train"].map(
-        lambda x: preprocess_alpaca_example(x, tokenizer, max_length), 
+        lambda x: preprocess_alpaca_example(x, tokenizer, max_length),
         batched=False,
         desc="Tokenizing"
     )
-    
+
     train_dataloader = DataLoader(
         tokenized_dataset,
         batch_size=1,
         collate_fn=default_data_collator,
         shuffle=True
     )
-    
+
     return tokenized_dataset, train_dataloader
 
 
@@ -224,9 +255,9 @@ def initialize_wandb(args: argparse.Namespace, exp_name: str, logger: logging.Lo
 
 def main(args: argparse.Namespace) -> None:
     logger = setup_logger(rank=0, log_level=args.log_level)
-    
+
     exp_name = create_experiment_name(args)
-    
+
     logger.debug(f"Starting experiment: {exp_name}")
     logger.debug("Training configuration:")
     logger.debug(f"  Model: {args.model_name}")
@@ -257,25 +288,25 @@ def main(args: argparse.Namespace) -> None:
         training_data=tokenized_dataset,
         collate_fn=default_data_collator
     )
-    
+
     logger = setup_logger(rank=dist.get_rank(), log_level=args.log_level)
-    
+
     initialize_wandb(args, exp_name, logger)
 
     model_engine.train()
-    
+
     sequence_length = args.max_length
     model_size = sum(get_parameter_count(p) for p in model.parameters())
     is_moe_model = detect_moe_model(model, args.model_name)
-    
+
     logger.debug(f"Model type: {'MoE' if is_moe_model else 'Dense'}")
     logger.debug(f"Model size: {model_size:,} parameters")
-    
+
     # Calculate TFLOPS only for non-MoE models
     total_tflops = None
     if not is_moe_model:
         total_tflops = estimate_transformer_tflops(
-            sequence_length, model_size, model.config.num_hidden_layers, 
+            sequence_length, model_size, model.config.num_hidden_layers,
             model.config.hidden_size, args.activation_checkpointing
         )
 
@@ -284,45 +315,52 @@ def main(args: argparse.Namespace) -> None:
     total_train_time = 0
     iter_times = []
     losses = []
-    
+    # Per-bench-step records (warmup steps excluded), written to results.json.
+    step_records = []
+
     stop = False
     for epoch in range(args.num_train_epochs):
         logger.debug(f"Starting epoch {epoch + 1}/{args.num_train_epochs}")
-        
+
         for step, batch in enumerate(train_dataloader):
+            # nsys capture range: start at profile_start, stop after profile_end.
+            # Activated only when --profile is passed.
+            if args.profile and global_step == args.profile_start:
+                nsys_start()
+
             step_start_time = time.time()
             batch = {k: v.to(model_engine.device) for k, v in batch.items()}
-            
+
             actual_batch_size = batch['input_ids'].shape[0]
             tokens_in_batch = actual_batch_size * sequence_length
-            
+
             outputs = model_engine(**batch)
             loss = outputs.loss
 
             model_engine.backward(loss)
-            
+
             model_engine.step()
 
             step_time = time.time() - step_start_time
             global_step += 1
-            
+
             if global_step > args.warmup_steps:
                 iter_times.append(step_time)
-            
+
             losses.append(loss.item())
-            
+
             total_tokens_processed += tokens_in_batch
             total_train_time += step_time
-            
+
             tokens_per_second = tokens_in_batch / step_time
             step_tflops = None
-            
+
             if not is_moe_model and total_tflops is not None:
                 step_tflops = args.batch_size * total_tflops / step_time
-            
+
             if global_step % args.log_interval == 0:
                 avg_loss = sum(losses[-args.log_interval:]) / len(losses[-args.log_interval:])
-                
+
                 if is_moe_model:
                     # Skip throughput metrics for MoE models
                     log_msg = (f"Step {global_step:4d} | "
@@ -336,7 +374,7 @@ def main(args: argparse.Namespace) -> None:
                               f"Tokens/s: {tokens_per_second:6.0f}")
 
                 logger.info(log_msg)
-                
+
                 if args.use_wandb and dist.get_rank() == 0:
                     log_dict = {
                         "train/loss": avg_loss,
@@ -346,20 +384,36 @@ def main(args: argparse.Namespace) -> None:
                         "perf/step_time_ms": step_time * MS_PER_SECOND,
                         "perf/tokens_per_second": tokens_per_second,
                     }
-                    
+
                     if not is_moe_model and step_tflops is not None:
                         log_dict["perf/tflops"] = step_tflops
-                    
+
                     wandb.log(log_dict, step=global_step)
-            
+
+            # Accumulate per-step record for JSON output (bench steps only).
+            if global_step > args.warmup_steps:
+                record = {
+                    "step": global_step,
+                    "loss": round(loss.item(), 6),
+                    "iter_time_ms": round(step_time * MS_PER_SECOND, 1),
+                    "tokens_per_second": round(tokens_per_second, 1),
+                }
+                if step_tflops is not None:
+                    record["tflops"] = round(step_tflops, 4)
+                step_records.append(record)
+
+            # nsys capture range: stop after profile_end step.
+            if args.profile and global_step == args.profile_end:
+                nsys_stop()
+
             stop = global_step >= args.bench_steps
             if stop:
                 break
-        
+
         if stop:
             break
-                
-    
+
+
     if args.save_checkpoint and dist.get_rank() == 0:
         try:
             logger.debug(f"Saving model to {args.output_dir}...")
@@ -369,14 +423,53 @@ def main(args: argparse.Namespace) -> None:
             logger.debug("Model saved successfully!")
         except Exception as e:
             logger.error(f"Error saving model: {e}")
-    
+
     if args.use_wandb and dist.get_rank() == 0:
         try:
             wandb.finish()
             logger.debug("WandB run finished successfully")
         except Exception as e:
             logger.error(f"Error finishing WandB run: {e}")
-        
+
+    # Save benchmark results as JSON (rank 0 only, bench steps only).
+    if dist.get_rank() == 0 and iter_times:
+        avg_time = sum(iter_times) / len(iter_times)
+        avg_tokens_per_s = args.batch_size * sequence_length / avg_time
+
+        # Infer mode label from the deepspeed config filename
+        mode_label = "zero3"
+        if args.deepspeed_config:
+            for candidate in ("superoffload", "zerooffload", "zeroinfinity"):
+                if candidate in args.deepspeed_config:
+                    mode_label = candidate
+                    break
+
+        avg_tflops = None
+        if not is_moe_model and total_tflops is not None:
+            avg_tflops = round(args.batch_size * total_tflops / avg_time, 4)
+
+        results = {
+            "mode": mode_label,
+            "model": args.model_name,
+            "batch_size": args.batch_size,
+            "seq_len": sequence_length,
+            "gpus": dist.get_world_size(),
+            "activation_checkpointing": args.activation_checkpointing,
+            "warmup_steps": args.warmup_steps,
+            "bench_steps": args.bench_steps,
+            "avg_iter_time_ms": round(avg_time * MS_PER_SECOND, 1),
+            "avg_tokens_per_second": round(avg_tokens_per_s, 1),
+            "avg_tflops": avg_tflops,
+            # One entry per bench step (warmup excluded), length = bench_steps - warmup_steps.
+            "steps": step_records,
+        }
+
+        os.makedirs(args.output_dir, exist_ok=True)
+        results_path = os.path.join(args.output_dir, "results.json")
+        with open(results_path, "w") as f:
+            json.dump(results, f, indent=2)
+        logger.info(f"Results saved to {results_path}")
+
     logger.debug("Training completed successfully!")
 
 def create_argument_parser() -> argparse.ArgumentParser:
@@ -385,7 +478,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
         description="Fine-tune language models with DeepSpeed ZeRO Stage 3",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    
+
     parser.add_argument("--model_name", type=str, required=True,
                        help="HuggingFace model name or path")
     parser.add_argument("--lr", type=float, required=True,
@@ -394,7 +487,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
                        help="Training batch size per device")
     parser.add_argument("--output_dir", type=str, required=True,
                        help="Directory to save model checkpoints")
-    
+
     parser.add_argument("--attn_implementation", type=str, default="flash_attention_2",
                        choices=["eager", "sdpa", "flash_attention_2"],
                        help="Attention implementation to use")
@@ -411,15 +504,15 @@ def create_argument_parser() -> argparse.ArgumentParser:
                        help="Weight decay for optimization")
     parser.add_argument("--warmup", type=float, default=0.01,
                        help="Warmup ratio for learning rate schedule")
-    
+
     parser.add_argument("--local_rank", type=int, default=-1,
                        help="Local rank passed from distributed launcher")
-    
+
     parser.add_argument("--seed", type=int, default=42,
                        help="Random seed for reproducibility")
     parser.add_argument("--deterministic", action="store_true",
                        help="Enable deterministic training for full reproducibility")
-    
+
     parser.add_argument("--log_interval", type=int, default=1,
                        help="Log performance metrics every N steps")
     parser.add_argument("--log_level", type=str, default="INFO",
@@ -429,10 +522,10 @@ def create_argument_parser() -> argparse.ArgumentParser:
                        help="Number of warmup steps for performance measurements")
     parser.add_argument("--bench_steps", type=int, default=100,
                        help="Number of benchmark steps to run")
-    
+
     parser.add_argument("--save_checkpoint", action="store_true",
                        help="Save model checkpoint after training")
-    
+
     parser.add_argument("--use_wandb", action="store_true",
                        help="Enable Weights & Biases logging")
     parser.add_argument("--wandb_project", type=str, default="superoffload",
@@ -441,28 +534,35 @@ def create_argument_parser() -> argparse.ArgumentParser:
                        help="WandB run name (auto-generated if not provided)")
     parser.add_argument("--wandb_tags", type=str, nargs="+", default=[],
                        help="WandB tags for the run")
-    
+
     parser.add_argument("--dataset_name", type=str, default="tatsu-lab/alpaca",
                        help="HuggingFace dataset name")
     parser.add_argument("--dataset_percentage", type=float, default=100.0,
                        help="Percentage of dataset to use (1.0-100.0)")
-    
+
+    parser.add_argument("--profile", action="store_true",
+                       help="Enable nsys profiling via cudaProfilerApi range capture")
+    parser.add_argument("--profile_start", type=int, default=0,
+                       help="Global step at which to call cudaProfilerStart (inclusive)")
+    parser.add_argument("--profile_end", type=int, default=0,
+                       help="Global step at which to call cudaProfilerStop (inclusive)")
+
     return parser
 
 
 def validate_arguments(args: argparse.Namespace) -> None:
     if args.dataset_percentage <= 0 or args.dataset_percentage > 100:
         raise ValueError("dataset_percentage must be between 0 and 100")
-    
+
     if args.max_length <= 0:
         raise ValueError("max_length must be positive")
-    
+
     if args.batch_size <= 0:
         raise ValueError("batch_size must be positive")
-    
+
     if args.lr <= 0:
         raise ValueError("learning rate must be positive")
-    
+
     if args.num_train_epochs <= 0:
         raise ValueError("num_train_epochs must be positive")
 
@@ -471,9 +571,9 @@ if __name__ == "__main__":
     parser = create_argument_parser()
     parser = deepspeed.add_config_arguments(parser)
     args = parser.parse_args()
-    
+
     validate_arguments(args)
-    
+
     if args.deterministic:
         enable_full_determinism(args.seed)
         torch.backends.cudnn.benchmark = False
