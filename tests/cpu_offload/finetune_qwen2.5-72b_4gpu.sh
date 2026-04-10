@@ -13,6 +13,12 @@
 #   grad_accum_steps : gradient accumulation steps (default: 256 / mbs / 4)
 set -eo pipefail
 
+if [ -z "${MODELS_PATH}" ]; then
+    echo "Error: MODELS_PATH environment variable is not set."
+    echo "  export MODELS_PATH=/path/to/your/model/cache"
+    exit 1
+fi
+
 MODE=${1:?"Usage: $0 <mode> <mbs> [cpu_ratio] [grad_accum_steps]"}
 MBS=${2:?"Usage: $0 <mode> <mbs> [cpu_ratio] [grad_accum_steps]"}
 CPU_RATIO=${3:-0.9}
@@ -95,8 +101,19 @@ echo "Qwen2.5-72B-Instruct | mode=${MODE} mbs=${MBS} cpu_ratio=${CPU_RATIO} gas=
 echo "Output: ${OUTPUT_DIR}"
 echo "========================================================"
 
+# Wrap deepspeed with numarun for CPU core/NUMA binding if available.
+# numarun uses LOCAL_RANK and LOCAL_WORLD_SIZE (set by deepspeed per rank)
+# to pin each worker to the appropriate CPU cores and NUMA node.
+if command -v numarun &>/dev/null; then
+    NUMARUN="numarun"
+    echo "[INFO] numarun found: enabling per-rank CPU affinity"
+else
+    NUMARUN=""
+    echo "[INFO] numarun not found: skipping CPU affinity binding"
+fi
+
 NSYS_OUT="${OUTPUT_DIR}/profile"
-CMD="deepspeed --num_gpus=${GPUS} ${SCRIPT_DIR}/finetune_zero3.py \
+CMD="${NUMARUN} deepspeed --num_gpus=${GPUS} ${SCRIPT_DIR}/finetune_zero3.py \
     --deepspeed_config=${DS_CONFIG_JSON} \
     --model_name ${MODEL_NAME} \
     --lr 1e-5 \

@@ -159,6 +159,11 @@ def load_model(
     model_name: str, attn_implementation: str, logger: logging.Logger
 ) -> AutoModelForCausalLM:
     logger.debug(f"Loading model: {model_name}")
+    if model_name.startswith("/") and not os.path.isdir(model_name):
+        raise ValueError(
+            f"Local model path does not exist: '{model_name}'\n"
+            "Make sure $MODELS_PATH is set correctly before running the script."
+        )
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=torch.bfloat16,

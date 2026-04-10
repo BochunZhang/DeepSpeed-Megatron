@@ -258,6 +258,11 @@ def main(args: argparse.Namespace) -> None:
     )
 
     # Load on CPU; DeepSpeed partitions across stages after initialize().
+    if args.model_name.startswith("/") and not os.path.isdir(args.model_name):
+        raise ValueError(
+            f"Local model path does not exist: '{args.model_name}'\n"
+            "Make sure $MODELS_PATH is set correctly before running the script."
+        )
     hf_model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=torch.bfloat16,

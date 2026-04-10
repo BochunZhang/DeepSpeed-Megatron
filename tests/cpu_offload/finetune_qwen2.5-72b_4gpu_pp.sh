@@ -11,6 +11,12 @@
 #   global_batch_size: default 256; micro_batches = gbs / mbs
 set -eo pipefail
 
+if [ -z "${MODELS_PATH}" ]; then
+    echo "Error: MODELS_PATH environment variable is not set."
+    echo "  export MODELS_PATH=/path/to/your/model/cache"
+    exit 1
+fi
+
 MBS=${1:?"Usage: $0 <mbs> [global_batch_size]"}
 GBS=${2:-256}
 GPUS=4
@@ -31,8 +37,16 @@ echo "Qwen2.5-72B-Instruct PP | mbs=${MBS} micro_batches=${MICRO_BATCHES}"
 echo "Output: ${OUTPUT_DIR}"
 echo "========================================================"
 
+if command -v numarun &>/dev/null; then
+    NUMARUN="numarun"
+    echo "[INFO] numarun found: enabling per-rank CPU affinity"
+else
+    NUMARUN=""
+    echo "[INFO] numarun not found: skipping CPU affinity binding"
+fi
+
 NSYS_OUT="${OUTPUT_DIR}/profile"
-CMD="deepspeed --num_gpus=${GPUS} ${SCRIPT_DIR}/finetune_pp.py \
+CMD="${NUMARUN} deepspeed --num_gpus=${GPUS} ${SCRIPT_DIR}/finetune_pp.py \
     --model_name ${MODEL_NAME} \
     --lr 1e-5 \
     --batch_size ${MBS} \
