@@ -15,12 +15,12 @@ PROFILE=false
 
 usage() {
     echo "Usage: $0 [--mode MODE] [--batch_size N] [--mbs N] [--cpu_ratio R] [--profile]"
-    echo "  --mode       superoffload (default) | zerooffload | zeroinfinity"
+    echo "  --mode       superoffload (default) | zerooffload | zeroinfinity | superinfinity"
     echo "  --batch_size train batch size across all GPUs (default: 8)"
     echo "  --mbs        train micro batch size per GPU (default: 1)"
     echo "               gradient_accumulation_steps is derived as:"
     echo "               batch_size / (mbs * num_gpus)"
-    echo "  --cpu_ratio  CPU offload ratio for superoffload (default: 0.90)"
+    echo "  --cpu_ratio  CPU offload ratio for superoffload/superinfinity (default: 0.90)"
     echo "  --profile    enable nsys profiling (default: off)"
     exit 1
 }
@@ -61,8 +61,11 @@ elif [ "$MODE" = "zerooffload" ]; then
 elif [ "$MODE" = "zeroinfinity" ]; then
     MODE_LABEL="zero-infinity"
     CONFIG_LABEL="bs${BATCH_SIZE}-mbs${MBS}"
+elif [ "$MODE" = "superinfinity" ]; then
+    MODE_LABEL="super-infinity"
+    CONFIG_LABEL="bs${BATCH_SIZE}-mbs${MBS}-cpu${CPU_RATIO}"
 else
-    echo "Error: Unknown mode '$MODE'. Use: superoffload | zerooffload | zeroinfinity"
+    echo "Error: Unknown mode '$MODE'. Use: superoffload | zerooffload | zeroinfinity | superinfinity"
     exit 1
 fi
 
@@ -208,6 +211,34 @@ cat > "${DS_CONFIG_JSON}" << EOF
         "offload_optimizer": {
             "device": "cpu",
             "pin_memory": true
+        },
+        "offload_param": {
+            "device": "cpu",
+            "pin_memory": true
+        }
+    },
+    "wall_clock_breakdown": true
+}
+EOF
+
+elif [ "$MODE" = "superinfinity" ]; then
+cat > "${DS_CONFIG_JSON}" << EOF
+{
+    "train_batch_size": ${BATCH_SIZE},
+    "train_micro_batch_size_per_gpu": ${MBS},
+    "gradient_accumulation_steps": ${GAS},
+    "bf16": { "enabled": true },
+    "zero_optimization": {
+        "stage": 3,
+        "overlap_comm": false,
+        "reduce_bucket_size": 4e8,
+        "sub_group_size": 4e8,
+        "offload_optimizer": {
+            "device": "cpu",
+            "pin_memory": true,
+            "ratio": ${CPU_RATIO},
+            "super_offload": true,
+            "cpuadam_cores_perc": 0.90
         },
         "offload_param": {
             "device": "cpu",
