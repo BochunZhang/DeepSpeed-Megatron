@@ -8,7 +8,7 @@ import os
 import time
 import logging
 from datetime import datetime
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Optional, Tuple
 
 import torch
 import deepspeed
@@ -47,7 +47,7 @@ def setup_logger(rank: int = 0, log_level: str = "INFO") -> logging.Logger:
     logger.handlers.clear()
     numeric_level = getattr(logging, log_level.upper(), logging.INFO)
     logger.setLevel(numeric_level)
-    
+
     if rank == 0:
         handler = logging.StreamHandler()
         handler.setLevel(numeric_level)
@@ -59,6 +59,43 @@ def setup_logger(rank: int = 0, log_level: str = "INFO") -> logging.Logger:
         logger.addHandler(handler)
 
     return logger
+
+
+class TrainingLogWriter:
+    """Per-iteration training log writer (rank-0 only).
+
+    Streams one JSON record per iteration to ``training_log.jsonl`` during
+    training and, on ``close_and_convert``, rewrites the collected records
+    into ``training_log.json`` as a single JSON array for downstream tooling.
+    """
+
+    def __init__(self, output_dir: str) -> None:
+        os.makedirs(output_dir, exist_ok=True)
+        self.jsonl_path = os.path.join(output_dir, "training_log.jsonl")
+        self.json_path = os.path.join(output_dir, "training_log.json")
+        self._f = open(self.jsonl_path, "w")
+        self._closed = False
+
+    def append(self, record: Dict[str, Any]) -> None:
+        self._f.write(json.dumps(record) + "\n")
+        self._f.flush()
+
+    def close_and_convert(self) -> None:
+        # Idempotent: safe to call from both the normal path and a finally block.
+        if self._closed:
+            return
+        self._closed = True
+        self._f.close()
+
+        records = []
+        with open(self.jsonl_path, "r") as fin:
+            for line in fin:
+                line = line.strip()
+                if not line:
+                    continue
+                records.append(json.loads(line))
+        with open(self.json_path, "w") as fout:
+            json.dump(records, fout, indent=2)
 
 # Constants
 DEFAULT_OPTIMIZER_LR = 0.001
@@ -309,100 +346,129 @@ def main(args: argparse.Namespace) -> None:
     # Per-bench-step records (warmup steps excluded), written to results.json.
     step_records = []
 
-    stop = False
-    for epoch in range(args.num_train_epochs):
-        logger.debug(f"Starting epoch {epoch + 1}/{args.num_train_epochs}")
+    # Full per-iteration training log (includes warmup steps). Written only on
+    # rank 0, streamed as JSON Lines during training and converted to a single
+    # JSON array when the training loop exits (normally or via exception).
+    training_log_writer: Optional[TrainingLogWriter] = None
+    if dist.get_rank() == 0:
+        training_log_writer = TrainingLogWriter(args.output_dir)
 
-        for step, batch in enumerate(train_dataloader):
-            # nsys capture range: start at profile_start, stop after profile_end.
-            # Activated only when --profile is passed.
-            if args.profile and global_step == args.profile_start:
-                nsys_start()
+    try:
+        stop = False
+        for epoch in range(args.num_train_epochs):
+            logger.debug(f"Starting epoch {epoch + 1}/{args.num_train_epochs}")
 
-            step_start_time = time.time()
-            batch = {k: v.to(model_engine.device) for k, v in batch.items()}
+            for step, batch in enumerate(train_dataloader):
+                # nsys capture range: start at profile_start, stop after profile_end.
+                # Activated only when --profile is passed.
+                if args.profile and global_step == args.profile_start:
+                    nsys_start()
 
-            actual_batch_size = batch['input_ids'].shape[0]
-            tokens_in_batch = actual_batch_size * sequence_length
+                step_start_time = time.time()
+                batch = {k: v.to(model_engine.device) for k, v in batch.items()}
 
-            outputs = model_engine(**batch)
-            loss = outputs.loss
+                actual_batch_size = batch['input_ids'].shape[0]
+                tokens_in_batch = actual_batch_size * sequence_length
 
-            model_engine.backward(loss)
+                outputs = model_engine(**batch)
+                loss = outputs.loss
 
-            model_engine.step()
+                model_engine.backward(loss)
 
-            step_time = time.time() - step_start_time
-            global_step += 1
+                model_engine.step()
 
-            if global_step > args.warmup_steps:
-                iter_times.append(step_time)
+                step_time = time.time() - step_start_time
+                global_step += 1
 
-            losses.append(loss.item())
+                if global_step > args.warmup_steps:
+                    iter_times.append(step_time)
 
-            total_tokens_processed += tokens_in_batch
-            total_train_time += step_time
+                losses.append(loss.item())
 
-            tokens_per_second = tokens_in_batch / step_time
-            step_tflops = None
+                total_tokens_processed += tokens_in_batch
+                total_train_time += step_time
 
-            if not is_moe_model and total_tflops is not None:
-                step_tflops = args.batch_size * total_tflops / step_time / dist.get_world_size()
+                tokens_per_second = tokens_in_batch / step_time
+                step_tflops = None
 
-            if global_step % args.log_interval == 0:
-                avg_loss = sum(losses[-args.log_interval:]) / len(losses[-args.log_interval:])
+                if not is_moe_model and total_tflops is not None:
+                    step_tflops = args.batch_size * total_tflops / step_time / dist.get_world_size()
 
-                if is_moe_model:
-                    # Skip throughput metrics for MoE models
-                    log_msg = (f"Step {global_step:4d} | "
-                              f"Loss: {avg_loss:.4f} | "
-                              f"Time: {step_time * MS_PER_SECOND:5.0f}ms")
-                else:
-                    log_msg = (f"Step {global_step:4d} | "
-                              f"Loss: {avg_loss:.4f} | "
-                              f"Time: {step_time * MS_PER_SECOND:5.0f}ms | "
-                              f"TFLOPS/GPU: {step_tflops:5.2f} | "
-                              f"Tokens/s: {tokens_per_second:6.0f}")
+                if global_step % args.log_interval == 0:
+                    avg_loss = sum(losses[-args.log_interval:]) / len(losses[-args.log_interval:])
 
-                logger.info(log_msg)
+                    if is_moe_model:
+                        # Skip throughput metrics for MoE models
+                        log_msg = (f"Step {global_step:4d} | "
+                                  f"Loss: {avg_loss:.4f} | "
+                                  f"Time: {step_time * MS_PER_SECOND:5.0f}ms")
+                    else:
+                        log_msg = (f"Step {global_step:4d} | "
+                                  f"Loss: {avg_loss:.4f} | "
+                                  f"Time: {step_time * MS_PER_SECOND:5.0f}ms | "
+                                  f"TFLOPS/GPU: {step_tflops:5.2f} | "
+                                  f"Tokens/s: {tokens_per_second:6.0f}")
 
-                if args.use_wandb and dist.get_rank() == 0:
-                    log_dict = {
-                        "train/loss": avg_loss,
-                        "train/epoch": epoch + 1,
-                        "train/global_step": global_step,
-                        "train/learning_rate": args.lr,
-                        "perf/step_time_ms": step_time * MS_PER_SECOND,
-                        "perf/tokens_per_second": tokens_per_second,
+                    logger.info(log_msg)
+
+                    if args.use_wandb and dist.get_rank() == 0:
+                        log_dict = {
+                            "train/loss": avg_loss,
+                            "train/epoch": epoch + 1,
+                            "train/global_step": global_step,
+                            "train/learning_rate": args.lr,
+                            "perf/step_time_ms": step_time * MS_PER_SECOND,
+                            "perf/tokens_per_second": tokens_per_second,
+                        }
+
+                        if not is_moe_model and step_tflops is not None:
+                            log_dict["perf/tflops_per_gpu"] = step_tflops
+
+                        wandb.log(log_dict, step=global_step)
+
+                # Accumulate per-step record for JSON output (bench steps only).
+                if global_step > args.warmup_steps:
+                    record = {
+                        "step": global_step,
+                        "loss": round(loss.item(), 6),
+                        "iter_time_ms": round(step_time * MS_PER_SECOND, 1),
+                        "tokens_per_second": round(tokens_per_second, 1),
                     }
+                    if step_tflops is not None:
+                        record["tflops_per_gpu"] = round(step_tflops, 4)
+                    step_records.append(record)
 
-                    if not is_moe_model and step_tflops is not None:
-                        log_dict["perf/tflops_per_gpu"] = step_tflops
+                # Full per-iteration training log (includes warmup steps).
+                if training_log_writer is not None:
+                    iter_record = {
+                        "global_step": global_step,
+                        "epoch": epoch + 1,
+                        "loss": round(loss.item(), 6),
+                        "step_time_ms": round(step_time * MS_PER_SECOND, 1),
+                        "tokens_per_second": (
+                            round(tokens_per_second, 1) if not is_moe_model else None
+                        ),
+                        "learning_rate": args.lr,
+                        "tflops_per_gpu": (
+                            round(step_tflops, 4) if step_tflops is not None else None
+                        ),
+                    }
+                    training_log_writer.append(iter_record)
 
-                    wandb.log(log_dict, step=global_step)
+                # nsys capture range: stop after profile_end step.
+                if args.profile and global_step == args.profile_end:
+                    nsys_stop()
 
-            # Accumulate per-step record for JSON output (bench steps only).
-            if global_step > args.warmup_steps:
-                record = {
-                    "step": global_step,
-                    "loss": round(loss.item(), 6),
-                    "iter_time_ms": round(step_time * MS_PER_SECOND, 1),
-                    "tokens_per_second": round(tokens_per_second, 1),
-                }
-                if step_tflops is not None:
-                    record["tflops_per_gpu"] = round(step_tflops, 4)
-                step_records.append(record)
+                stop = global_step >= args.bench_steps
+                if stop:
+                    break
 
-            # nsys capture range: stop after profile_end step.
-            if args.profile and global_step == args.profile_end:
-                nsys_stop()
-
-            stop = global_step >= args.bench_steps
             if stop:
                 break
-
-        if stop:
-            break
+    finally:
+        if training_log_writer is not None:
+            training_log_writer.close_and_convert()
+            logger.info(f"Training log saved to {training_log_writer.json_path}")
 
 
     if args.save_checkpoint and dist.get_rank() == 0:
