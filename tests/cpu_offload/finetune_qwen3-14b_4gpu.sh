@@ -69,8 +69,31 @@ fi
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DS_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-MODEL_NAME="Qwen/Qwen3-14B"
+
+if [ -z "${MODELS_PATH}" ]; then
+    echo "Error: MODELS_PATH environment variable is not set."
+    echo "  export MODELS_PATH=/path/to/your/model/cache"
+    exit 1
+fi
+
+MODEL_REPO="Qwen/Qwen3-14B"
+MODEL_NAME="${MODELS_PATH}/${MODEL_REPO}"
 MODEL_SHORT="qwen3-14b"
+
+# Download the model into MODELS_PATH if it is not already present.
+if [ ! -d "${MODEL_NAME}" ] || [ -z "$(ls -A "${MODEL_NAME}" 2>/dev/null)" ]; then
+    echo "[INFO] ${MODEL_NAME} not found, downloading ${MODEL_REPO}..."
+    mkdir -p "${MODEL_NAME}"
+    if command -v hf &>/dev/null; then
+        hf download "${MODEL_REPO}" --local-dir "${MODEL_NAME}"
+    elif command -v huggingface-cli &>/dev/null; then
+        huggingface-cli download "${MODEL_REPO}" --local-dir "${MODEL_NAME}"
+    else
+        echo "Error: neither 'hf' nor 'huggingface-cli' is available."
+        echo "  pip install -U huggingface_hub"
+        exit 1
+    fi
+fi
 
 # Tag that is embedded in every output filename so runs remain identifiable
 # even when files from several runs are aggregated together.
