@@ -239,6 +239,7 @@ DEEPSPEED_CMD="${NUMARUN} deepspeed --num_gpus=${GPUS_PER_NODE} ${SCRIPT_DIR}/fi
 if [ "$PROFILE" = "true" ]; then
     nsys profile \
         --capture-range=cudaProfilerApi \
+        --capture-range-end=stop \
         --force-overwrite=true \
         -o "${NSYS_OUT}" \
         ${DEEPSPEED_CMD}
