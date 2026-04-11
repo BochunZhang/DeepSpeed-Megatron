@@ -64,15 +64,18 @@ def setup_logger(rank: int = 0, log_level: str = "INFO") -> logging.Logger:
 class TrainingLogWriter:
     """Per-iteration training log writer (rank-0 only).
 
-    Streams one JSON record per iteration to ``training_log.jsonl`` during
-    training and, on ``close_and_convert``, rewrites the collected records
-    into ``training_log.json`` as a single JSON array for downstream tooling.
+    Streams one JSON record per iteration to ``{run_tag}_training_log.jsonl``
+    during training and, on ``close_and_convert``, rewrites the collected
+    records into ``{run_tag}_training_log.json`` as a single JSON array for
+    downstream tooling. Embedding ``run_tag`` in the filename keeps outputs
+    identifiable when files from multiple runs are aggregated together.
     """
 
-    def __init__(self, output_dir: str) -> None:
+    def __init__(self, output_dir: str, run_tag: str = "run") -> None:
         os.makedirs(output_dir, exist_ok=True)
-        self.jsonl_path = os.path.join(output_dir, "training_log.jsonl")
-        self.json_path = os.path.join(output_dir, "training_log.json")
+        self.run_tag = run_tag
+        self.jsonl_path = os.path.join(output_dir, f"{run_tag}_training_log.jsonl")
+        self.json_path = os.path.join(output_dir, f"{run_tag}_training_log.json")
         self._f = open(self.jsonl_path, "w")
         self._closed = False
 
@@ -351,7 +354,7 @@ def main(args: argparse.Namespace) -> None:
     # JSON array when the training loop exits (normally or via exception).
     training_log_writer: Optional[TrainingLogWriter] = None
     if dist.get_rank() == 0:
-        training_log_writer = TrainingLogWriter(args.output_dir)
+        training_log_writer = TrainingLogWriter(args.output_dir, run_tag=args.run_tag)
 
     try:
         stop = False
@@ -522,7 +525,7 @@ def main(args: argparse.Namespace) -> None:
         }
 
         os.makedirs(args.output_dir, exist_ok=True)
-        results_path = os.path.join(args.output_dir, "results.json")
+        results_path = os.path.join(args.output_dir, f"{args.run_tag}_results.json")
         with open(results_path, "w") as f:
             json.dump(results, f, indent=2)
         logger.info(f"Results saved to {results_path}")
@@ -544,6 +547,10 @@ def create_argument_parser() -> argparse.ArgumentParser:
                        help="Training batch size per device")
     parser.add_argument("--output_dir", type=str, required=True,
                        help="Directory to save model checkpoints")
+    parser.add_argument("--run_tag", type=str, default="run",
+                       help="Tag embedded in output filenames "
+                            "(e.g. qwen3-14b_zero-offload_bs8-mbs1). "
+                            "Defaults to 'run' when not provided.")
 
     parser.add_argument("--attn_implementation", type=str, default="flash_attention_2",
                        choices=["eager", "sdpa", "flash_attention_2"],

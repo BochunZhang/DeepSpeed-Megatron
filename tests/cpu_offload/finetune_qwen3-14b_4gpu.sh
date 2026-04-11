@@ -70,8 +70,17 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DS_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 MODEL_NAME="Qwen/Qwen3-14B"
-OUTPUT_DIR="${DS_ROOT}/results/cpu_offload/qwen3-14b/${MODE_LABEL}/${CONFIG_LABEL}"
-DS_CONFIG_JSON="${OUTPUT_DIR}/ds_config.json"
+MODEL_SHORT="qwen3-14b"
+
+# Tag that is embedded in every output filename so runs remain identifiable
+# even when files from several runs are aggregated together.
+RUN_TAG="${MODEL_SHORT}_${MODE_LABEL}_${CONFIG_LABEL}"
+
+# Append a timestamp to the output directory itself so repeated runs with the
+# same (mode, batch_size, mbs) do not silently overwrite earlier results.
+RUN_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+OUTPUT_DIR="${DS_ROOT}/results/cpu_offload/${MODEL_SHORT}/${MODE_LABEL}/${CONFIG_LABEL}_${RUN_TIMESTAMP}"
+DS_CONFIG_JSON="${OUTPUT_DIR}/${RUN_TAG}_ds_config.json"
 
 mkdir -p "${OUTPUT_DIR}"
 
@@ -202,7 +211,7 @@ fi
 # profile_end:   global_step value AFTER  the 7th step completes        (= 7)
 PROFILE_START=5
 PROFILE_END=7
-NSYS_OUT="${OUTPUT_DIR}/profile"
+NSYS_OUT="${OUTPUT_DIR}/${RUN_TAG}_profile"
 
 PROFILE_FLAG=""
 if [ "$PROFILE" = "true" ]; then
@@ -221,6 +230,7 @@ DEEPSPEED_CMD="${NUMARUN} deepspeed --num_gpus=${GPUS_PER_NODE} ${SCRIPT_DIR}/fi
     --batch_size ${BATCH_SIZE} \
     --weight_decay ${WEIGHT_DECAY} \
     --output_dir ${OUTPUT_DIR} \
+    --run_tag ${RUN_TAG} \
     --seed ${SEED} \
     --max_length ${MAX_LENGTH} \
     --log_interval ${LOG_INTERVAL} \
