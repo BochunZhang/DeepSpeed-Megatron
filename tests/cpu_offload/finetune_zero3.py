@@ -356,7 +356,7 @@ def main(args: argparse.Namespace) -> None:
             step_tflops = None
 
             if not is_moe_model and total_tflops is not None:
-                step_tflops = args.batch_size * total_tflops / step_time
+                step_tflops = args.batch_size * total_tflops / step_time / dist.get_world_size()
 
             if global_step % args.log_interval == 0:
                 avg_loss = sum(losses[-args.log_interval:]) / len(losses[-args.log_interval:])
@@ -370,7 +370,7 @@ def main(args: argparse.Namespace) -> None:
                     log_msg = (f"Step {global_step:4d} | "
                               f"Loss: {avg_loss:.4f} | "
                               f"Time: {step_time * MS_PER_SECOND:5.0f}ms | "
-                              f"TFLOPS: {step_tflops:5.2f} | "
+                              f"TFLOPS/GPU: {step_tflops:5.2f} | "
                               f"Tokens/s: {tokens_per_second:6.0f}")
 
                 logger.info(log_msg)
@@ -386,7 +386,7 @@ def main(args: argparse.Namespace) -> None:
                     }
 
                     if not is_moe_model and step_tflops is not None:
-                        log_dict["perf/tflops"] = step_tflops
+                        log_dict["perf/tflops_per_gpu"] = step_tflops
 
                     wandb.log(log_dict, step=global_step)
 
@@ -399,7 +399,7 @@ def main(args: argparse.Namespace) -> None:
                     "tokens_per_second": round(tokens_per_second, 1),
                 }
                 if step_tflops is not None:
-                    record["tflops"] = round(step_tflops, 4)
+                    record["tflops_per_gpu"] = round(step_tflops, 4)
                 step_records.append(record)
 
             # nsys capture range: stop after profile_end step.
@@ -446,7 +446,7 @@ def main(args: argparse.Namespace) -> None:
 
         avg_tflops = None
         if not is_moe_model and total_tflops is not None:
-            avg_tflops = round(args.batch_size * total_tflops / avg_time, 4)
+            avg_tflops = round(args.batch_size * total_tflops / avg_time / dist.get_world_size(), 4)
 
         results = {
             "mode": mode_label,
@@ -459,7 +459,7 @@ def main(args: argparse.Namespace) -> None:
             "bench_steps": args.bench_steps,
             "avg_iter_time_ms": round(avg_time * MS_PER_SECOND, 1),
             "avg_tokens_per_second": round(avg_tokens_per_s, 1),
-            "avg_tflops": avg_tflops,
+            "avg_tflops_per_gpu": avg_tflops,
             # One entry per bench step (warmup excluded), length = bench_steps - warmup_steps.
             "steps": step_records,
         }
