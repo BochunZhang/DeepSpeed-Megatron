@@ -2,7 +2,7 @@
 set -eo pipefail
 
 echo "================================================"
-echo "Qwen3-122B-A10B (MoE) Fine-tuning with DeepSpeed on 4 GPU"
+echo "Qwen3.5-122B-A10B (MoE) Fine-tuning with DeepSpeed on 4 GPU"
 echo "================================================"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -78,9 +78,9 @@ if [ -z "${MODELS_PATH}" ]; then
     exit 1
 fi
 
-MODEL_REPO="Qwen/Qwen3-122B-A10B"
+MODEL_REPO="Qwen/Qwen3.5-122B-A10B"
 MODEL_NAME="${MODELS_PATH}/${MODEL_REPO}"
-MODEL_SHORT="qwen3-122b-a10b"
+MODEL_SHORT="qwen3.5-122b-a10b"
 
 # Download the model if not present.
 if [ ! -d "${MODEL_NAME}" ] || [ -z "$(ls -A "${MODEL_NAME}" 2>/dev/null)" ]; then
@@ -112,8 +112,8 @@ LOG_INTERVAL=1
 DATASET_NAME="tatsu-lab/alpaca"
 DATASET_PERCENTAGE=10.0
 USE_WANDB=false
-WANDB_PROJECT="qwen3-122b"
-WANDB_RUN_NAME="qwen3-122b-${MODE}"
+WANDB_PROJECT="qwen3.5-122b"
+WANDB_RUN_NAME="qwen3.5-122b-${MODE}"
 DETERMINISTIC=false
 NUM_ITERS=10
 
@@ -266,7 +266,7 @@ if [ "$PROFILE" = "true" ]; then
     PROFILE_FLAG="--profile --profile_start ${PROFILE_START} --profile_end ${PROFILE_END}"
 fi
 
-echo "Qwen3-122B-A10B | mode=${MODE} gbs=${GBS} mbs=${MBS} gas=${GAS} (derived) cpu_ratio=${CPU_RATIO} profile=${PROFILE}"
+echo "Qwen3.5-122B-A10B | mode=${MODE} gbs=${GBS} mbs=${MBS} gas=${GAS} (derived) cpu_ratio=${CPU_RATIO} profile=${PROFILE}"
 echo "Output: ${OUTPUT_DIR}"
 echo "================================================"
 
