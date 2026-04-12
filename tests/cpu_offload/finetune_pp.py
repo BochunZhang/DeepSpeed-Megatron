@@ -557,5 +557,10 @@ if __name__ == "__main__":
             f"micro_batch_size ({args.micro_batch_size}) * micro_batches ({args.micro_batches})"
         )
 
+    # PipelineModule.__init__ calls dist.get_rank(), so the distributed
+    # backend must be initialized before build_pipeline_model().
+    deepspeed.init_distributed()
+    args.local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
     logging.basicConfig(level=getattr(logging, args.log_level.upper()))
     main(args)
