@@ -109,48 +109,46 @@ class TrainingLogWriter:
 
 
 # ── Pipeline Layer Wrappers ───────────────────────────────────────────────────
-# Data flowing between stages:
-#   (hidden_states: bfloat16, cos: bfloat16, sin: bfloat16)
-#
-# Only hidden_states carries gradients; cos/sin are forwarded unchanged.
+# Data flowing between stages: (hidden_states, position_ids)
+# Only hidden_states carries gradients; position_ids is forwarded unchanged.
 # flash_attention_2 handles causal masking internally (no attention_mask needed).
 #
-# Qwen3 (and newer HF transformers) expect pre-computed rotary embeddings
-# (cos, sin) via the `position_embeddings` kwarg rather than raw position_ids.
-# Qwen2.5 still accepts position_ids.  We detect which interface the layer
-# uses at construction time and dispatch accordingly.
+# Qwen3 expects pre-computed (cos, sin) via the position_embeddings kwarg.
+# We give each DecoderLayerPipe its own reference to rotary_emb so it can
+# compute (cos, sin) locally — this avoids sending float tensors through the
+# pipeline (DeepSpeed PP may reshape/reinterpret non-gradient tensors during
+# activation checkpointing and cross-stage transfer).
 
 class EmbedLayerPipe(nn.Module):
-    """Stage 0: input_ids → (hidden_states, cos, sin)."""
+    """Stage 0: input_ids → (hidden_states, position_ids)."""
 
-    def __init__(self, embed_tokens: nn.Embedding, rotary_emb: nn.Module):
+    def __init__(self, embed_tokens: nn.Embedding):
         super().__init__()
         self.embed_tokens = embed_tokens
-        self.rotary_emb = rotary_emb
 
-    def forward(self, input_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, input_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         hidden_states = self.embed_tokens(input_ids)
         seq_len = input_ids.shape[1]
         position_ids = torch.arange(seq_len, dtype=torch.long, device=input_ids.device)
         position_ids = position_ids.unsqueeze(0).expand(input_ids.shape[0], -1)
-        cos, sin = self.rotary_emb(hidden_states, position_ids)
-        return (hidden_states, cos, sin)
+        return (hidden_states, position_ids)
 
 
 class DecoderLayerPipe(nn.Module):
-    """Middle stages: (hidden_states, cos, sin) → (hidden_states, cos, sin).
+    """Middle stages: (hidden_states, position_ids) → (hidden_states, position_ids).
 
-    Works for both dense decoder layers (Qwen2.5) and MoE decoder layers (Qwen3-MoE).
-    For MoE models, the full Qwen3MoeDecoderLayer (including its Qwen3MoeSparseMoeBlock)
-    runs entirely within one pipeline stage — no cross-stage Expert dispatch.
+    Each stage holds a reference to the shared rotary_emb so it can compute
+    (cos, sin) locally from position_ids.
     """
 
-    def __init__(self, decoder_layer: nn.Module):
+    def __init__(self, decoder_layer: nn.Module, rotary_emb: nn.Module):
         super().__init__()
         self.layer = decoder_layer
+        self.rotary_emb = rotary_emb
 
-    def forward(self, inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        hidden_states, cos, sin = inputs
+    def forward(self, inputs: Tuple[torch.Tensor, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        hidden_states, position_ids = inputs
+        cos, sin = self.rotary_emb(hidden_states, position_ids)
         outputs = self.layer(
             hidden_states=hidden_states,
             attention_mask=None,    # flash_attention_2 handles causal masking
@@ -160,19 +158,19 @@ class DecoderLayerPipe(nn.Module):
             use_cache=False,
         )
         # outputs[0] is hidden_states; MoE layers may return extra items (router loss etc.)
-        return (outputs[0], cos, sin)
+        return (outputs[0], position_ids)
 
 
 class NormHeadLayerPipe(nn.Module):
-    """Last stage: (hidden_states, cos, sin) → logits."""
+    """Last stage: (hidden_states, position_ids) → logits."""
 
     def __init__(self, norm: nn.Module, lm_head: nn.Linear):
         super().__init__()
         self.norm = norm
         self.lm_head = lm_head
 
-    def forward(self, inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> torch.Tensor:
-        hidden_states, _, _ = inputs
+    def forward(self, inputs: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+        hidden_states, _ = inputs
         return self.lm_head(self.norm(hidden_states))
 
 
@@ -194,9 +192,10 @@ def build_pipeline_model(
     the same .model.embed_tokens / .model.layers / .model.norm / .lm_head layout.
     """
     inner = hf_model.model
-    layers = [EmbedLayerPipe(inner.embed_tokens, inner.rotary_emb)]
+    rotary_emb = inner.rotary_emb
+    layers = [EmbedLayerPipe(inner.embed_tokens)]
     for decoder_layer in inner.layers:
-        layers.append(DecoderLayerPipe(decoder_layer))
+        layers.append(DecoderLayerPipe(decoder_layer, rotary_emb))
     layers.append(NormHeadLayerPipe(inner.norm, hf_model.lm_head))
 
     ckpt_interval = 1 if activation_checkpointing else 0
