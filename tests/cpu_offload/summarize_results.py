@@ -12,7 +12,7 @@ Supports two record schemas:
         iter_time_ms/tokens_per_second/tflops_per_gpu)
       - file name: "{run_tag}_results.json"
   * Pipeline-parallel runs (finetune_pp.py)
-      - micro-batch stored as "batch_size", global batch = batch_size *
+      - micro_batch_size stored separately, global batch under "gbs" =
         micro_batches
       - per-step TFLOPS under "tflops_per_step" (list of floats)
       - "pipeline_bubble_fraction" and "pp_stages" / "micro_batches"
@@ -95,31 +95,26 @@ def is_pp_record(rec: Dict[str, Any]) -> bool:
 def effective_mbs(rec: Dict[str, Any]) -> Any:
     """Micro-batch size per GPU / pipeline stage."""
     if is_pp_record(rec):
-        # finetune_pp.py stores the micro-batch in "batch_size".
-        return rec.get("batch_size")
-    # zero3 records do not carry the mbs explicitly; derive from
-    # train_batch_size / (gas * gpus) if the fields are present.
-    bs = rec.get("batch_size")
+        # PP records carry micro_batch_size explicitly.
+        return rec.get("micro_batch_size")
+    # zero3: derive mbs = gbs / (gas * gpus).
+    gbs = rec.get("gbs")
     gas = rec.get("gradient_accumulation_steps")
     gpus = rec.get("gpus")
-    if bs and gas and gpus:
+    if gbs and gas and gpus:
         try:
-            return bs // (int(gas) * int(gpus))
+            return gbs // (int(gas) * int(gpus))
         except (TypeError, ZeroDivisionError):
             return None
     return None
 
 
 def global_batch(rec: Dict[str, Any]) -> Any:
-    """Global (effective) training batch size."""
-    if is_pp_record(rec):
-        mbs = rec.get("batch_size")
-        mb = rec.get("micro_batches")
-        if mbs is not None and mb is not None:
-            return mbs * mb
-        return None
-    # For zero3 the stored "batch_size" IS the global train_batch_size.
-    return rec.get("batch_size")
+    """Global (effective) training batch size.
+
+    Both PP and zero3 now store the global batch under the "gbs" key.
+    """
+    return rec.get("gbs")
 
 
 # ── Styling helpers ───────────────────────────────────────────────────────────

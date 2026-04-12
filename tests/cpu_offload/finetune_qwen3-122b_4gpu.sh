@@ -109,7 +109,7 @@ CMD="${NUMARUN} deepspeed --num_gpus=${GPUS} ${SCRIPT_DIR}/finetune_zero3.py \
     --model_name ${MODEL_NAME} \
     --leaf_module Qwen3MoeSparseMoeBlock \
     --lr 1e-5 \
-    --batch_size ${MBS} \
+    --gbs ${MBS} \
     --output_dir ${OUTPUT_DIR} \
     --config_label ${CONFIG_LABEL} \
     --max_length 4096 \

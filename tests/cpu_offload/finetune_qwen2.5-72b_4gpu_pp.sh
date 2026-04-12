@@ -5,10 +5,10 @@
 # Pipeline-Parallel benchmark for Qwen2.5-72B-Instruct on 4 GPUs (no CPU offload).
 #
 # Usage:
-#   bash finetune_qwen2.5-72b_4gpu_pp.sh <mbs> [global_batch_size]
+#   bash finetune_qwen2.5-72b_4gpu_pp.sh <mbs> [global_gbs]
 #
 #   mbs              : micro-batch size per pipeline stage (e.g. 1 2 4)
-#   global_batch_size: default 256; micro_batches = gbs / mbs
+#   global_gbs: default 256; micro_batches = gbs / mbs
 set -eo pipefail
 
 if [ -z "${MODELS_PATH}" ]; then
@@ -17,7 +17,7 @@ if [ -z "${MODELS_PATH}" ]; then
     exit 1
 fi
 
-MBS=${1:?"Usage: $0 <mbs> [global_batch_size]"}
+MBS=${1:?"Usage: $0 <mbs> [global_gbs]"}
 GBS=${2:-256}
 GPUS=4
 PP_STAGES=4
@@ -49,7 +49,7 @@ NSYS_OUT="${OUTPUT_DIR}/profile"
 CMD="${NUMARUN} deepspeed --num_gpus=${GPUS} ${SCRIPT_DIR}/finetune_pp.py \
     --model_name ${MODEL_NAME} \
     --lr 1e-5 \
-    --batch_size ${MBS} \
+    --gbs ${MBS} \
     --micro_batch_size ${MBS} \
     --micro_batches ${MICRO_BATCHES} \
     --pp_stages ${PP_STAGES} \

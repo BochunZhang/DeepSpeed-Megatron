@@ -176,7 +176,7 @@ def create_experiment_name(args: argparse.Namespace) -> str:
     model_name_short = args.model_name.split("/")[-1]
     activation_checkpointing = 1 if args.activation_checkpointing else 0
 
-    exp_name = (f"{model_name_short}_bs{args.batch_size}_seq{args.max_length}"
+    exp_name = (f"{model_name_short}_bs{args.gbs}_seq{args.max_length}"
                 f"_ac{activation_checkpointing}_T{timestamp}")
     return exp_name
 
@@ -292,7 +292,7 @@ def main(args: argparse.Namespace) -> None:
     logger.debug(f"Starting experiment: {exp_name}")
     logger.debug("Training configuration:")
     logger.debug(f"  Model: {args.model_name}")
-    logger.debug(f"  Batch size: {args.batch_size}")
+    logger.debug(f"  Batch size: {args.gbs}")
     logger.debug(f"  Max length: {args.max_length}")
     logger.debug(f"  Learning rate: {args.lr}")
     logger.debug(f"  Epochs: {args.num_train_epochs}")
@@ -395,7 +395,7 @@ def main(args: argparse.Namespace) -> None:
                 step_tflops = None
 
                 if not is_moe_model and total_tflops is not None:
-                    step_tflops = args.batch_size * total_tflops / step_time / dist.get_world_size()
+                    step_tflops = args.gbs * total_tflops / step_time / dist.get_world_size()
 
                 if global_step % args.log_interval == 0:
                     avg_loss = sum(losses[-args.log_interval:]) / len(losses[-args.log_interval:])
@@ -494,7 +494,7 @@ def main(args: argparse.Namespace) -> None:
     # Save benchmark results as JSON (rank 0 only, bench steps only).
     if dist.get_rank() == 0 and iter_times:
         avg_time = sum(iter_times) / len(iter_times)
-        avg_tokens_per_s = args.batch_size * sequence_length / avg_time
+        avg_tokens_per_s = args.gbs * sequence_length / avg_time
 
         # Infer mode label from the deepspeed config filename
         mode_label = "zero3"
@@ -506,12 +506,12 @@ def main(args: argparse.Namespace) -> None:
 
         avg_tflops = None
         if not is_moe_model and total_tflops is not None:
-            avg_tflops = round(args.batch_size * total_tflops / avg_time / dist.get_world_size(), 4)
+            avg_tflops = round(args.gbs * total_tflops / avg_time / dist.get_world_size(), 4)
 
         results = {
             "mode": mode_label,
             "model": args.model_name,
-            "batch_size": args.batch_size,
+            "gbs": args.gbs,
             "seq_len": sequence_length,
             "gpus": dist.get_world_size(),
             "activation_checkpointing": args.activation_checkpointing,
@@ -543,7 +543,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
                        help="HuggingFace model name or path")
     parser.add_argument("--lr", type=float, required=True,
                        help="Learning rate for training")
-    parser.add_argument("--batch_size", type=int, required=True,
+    parser.add_argument("--gbs", type=int, required=True,
                        help="Training batch size per device")
     parser.add_argument("--output_dir", type=str, required=True,
                        help="Directory to save model checkpoints")
@@ -621,8 +621,8 @@ def validate_arguments(args: argparse.Namespace) -> None:
     if args.max_length <= 0:
         raise ValueError("max_length must be positive")
 
-    if args.batch_size <= 0:
-        raise ValueError("batch_size must be positive")
+    if args.gbs <= 0:
+        raise ValueError("gbs must be positive")
 
     if args.lr <= 0:
         raise ValueError("learning rate must be positive")

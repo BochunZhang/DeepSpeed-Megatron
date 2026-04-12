@@ -325,7 +325,7 @@ def main(args: argparse.Namespace) -> None:
     )
 
     ds_config = {
-        "train_batch_size": args.batch_size,
+        "train_batch_size": args.gbs,
         "train_micro_batch_size_per_gpu": args.micro_batch_size,
         "gradient_accumulation_steps": args.micro_batches,
         "bf16": {"enabled": True},
@@ -389,12 +389,12 @@ def main(args: argparse.Namespace) -> None:
             loss_val = loss.item() if loss is not None else float("nan")
             losses.append(loss_val)
 
-            tokens_per_second = args.batch_size * args.max_length / step_time
+            tokens_per_second = args.gbs * args.max_length / step_time
             step_tflops_per_gpu = None
 
             if per_sample_tflops is not None:
                 step_tflops_per_gpu = (
-                    args.batch_size * per_sample_tflops / step_time / args.gpus_per_node
+                    args.gbs * per_sample_tflops / step_time / args.gpus_per_node
                 )
                 if global_step > args.warmup_steps:
                     tflops_per_step.append(round(step_tflops_per_gpu, 2))
@@ -454,11 +454,11 @@ def main(args: argparse.Namespace) -> None:
     if dist.get_rank() == 0 and iter_times:
         avg_time = sum(iter_times) / len(iter_times)
         avg_tflops_per_gpu = (
-            args.batch_size * per_sample_tflops / avg_time / args.gpus_per_node
+            args.gbs * per_sample_tflops / avg_time / args.gpus_per_node
             if per_sample_tflops
             else None
         )
-        avg_tokens_per_s = args.batch_size * args.max_length / avg_time
+        avg_tokens_per_s = args.gbs * args.max_length / avg_time
 
         results = {
             "mode": "pp",
@@ -466,7 +466,8 @@ def main(args: argparse.Namespace) -> None:
             "config_label": args.run_tag,
             "pp_stages": args.pp_stages,
             "micro_batches": args.micro_batches,
-            "batch_size": args.batch_size,
+            "micro_batch_size": args.micro_batch_size,
+            "gbs": args.gbs,
             "seq_len": args.max_length,
             "gpus": args.gpus_per_node,
             "activation_checkpointing": args.activation_checkpointing,
@@ -503,7 +504,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model_name", type=str, required=True)
     parser.add_argument("--lr", type=float, required=True)
-    parser.add_argument("--batch_size", type=int, required=True,
+    parser.add_argument("--gbs", type=int, required=True,
                         help="Global batch size = micro_batch_size * micro_batches")
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--run_tag", type=str, default="run",
@@ -550,9 +551,9 @@ if __name__ == "__main__":
     parser = deepspeed.add_config_arguments(parser)
     args = parser.parse_args()
 
-    if args.batch_size != args.micro_batch_size * args.micro_batches:
+    if args.gbs != args.micro_batch_size * args.micro_batches:
         raise ValueError(
-            f"batch_size ({args.batch_size}) must equal "
+            f"gbs ({args.gbs}) must equal "
             f"micro_batch_size ({args.micro_batch_size}) * micro_batches ({args.micro_batches})"
         )
 

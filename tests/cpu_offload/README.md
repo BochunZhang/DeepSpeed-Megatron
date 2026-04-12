@@ -112,7 +112,7 @@ bash tests/cpu_offload/finetune_qwen2.5-72b_4gpu.sh superoffload 1 0.9
 bash tests/cpu_offload/finetune_qwen2.5-72b_4gpu.sh zeroinfinity 2
 bash tests/cpu_offload/finetune_qwen3-122b_4gpu.sh  superoffload 1 0.5
 
-# Pipeline Parallel: <mbs> [global_batch_size]
+# Pipeline Parallel: <mbs> [gbs]
 bash tests/cpu_offload/finetune_qwen2.5-72b_4gpu_pp.sh 1
 bash tests/cpu_offload/finetune_qwen3-122b_4gpu_pp.sh  2
 ```
@@ -129,7 +129,7 @@ bash tests/cpu_offload/finetune_qwen3-122b_4gpu_pp.sh  2
 
 | Setting | Value |
 |---|---|
-| Global batch size | 256 |
+| Global batch size (gbs) | 256 |
 | Warmup steps | 4 |
 | Benchmark steps | 12 |
 | Sequence length | 4096 |
@@ -149,7 +149,7 @@ Each run writes a `results.json` to its output directory.
   "mode": "superoffload",
   "model": "/path/to/Qwen/Qwen2.5-72B-Instruct",
   "config_label": "superoffload-ratio0.9-mbs1",
-  "batch_size": 1,
+  "gbs": 256,
   "seq_len": 4096,
   "gpus": 4,
   "activation_checkpointing": true,
@@ -181,7 +181,7 @@ Each run writes a `results.json` to its output directory.
 |---|---|---|
 | `mode` | string | `superoffload` / `zeroinfinity` / `pp` |
 | `config_label` | string | Human-readable label matching the output directory name |
-| `batch_size` | int | Micro-batch size per GPU |
+| `gbs` | int | Global batch size |
 | `seq_len` | int | Sequence length |
 | `gpus` | int | Number of GPUs used |
 | `avg_tflops_per_gpu` | float \| null | Average TFLOPs per GPU over bench steps (null for MoE) |

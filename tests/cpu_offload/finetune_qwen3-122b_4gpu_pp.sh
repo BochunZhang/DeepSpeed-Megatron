@@ -7,7 +7,7 @@
 # pipeline stage — Expert computation is fully local to one stage.
 #
 # Usage:
-#   bash finetune_qwen3-122b_4gpu_pp.sh <mbs> [global_batch_size]
+#   bash finetune_qwen3-122b_4gpu_pp.sh <mbs> [global_gbs]
 set -eo pipefail
 
 if [ -z "${MODELS_PATH}" ]; then
@@ -16,7 +16,7 @@ if [ -z "${MODELS_PATH}" ]; then
     exit 1
 fi
 
-MBS=${1:?"Usage: $0 <mbs> [global_batch_size]"}
+MBS=${1:?"Usage: $0 <mbs> [global_gbs]"}
 GBS=${2:-256}
 GPUS=4
 PP_STAGES=4
@@ -48,7 +48,7 @@ NSYS_OUT="${OUTPUT_DIR}/profile"
 CMD="${NUMARUN} deepspeed --num_gpus=${GPUS} ${SCRIPT_DIR}/finetune_pp.py \
     --model_name ${MODEL_NAME} \
     --lr 1e-5 \
-    --batch_size ${MBS} \
+    --gbs ${MBS} \
     --micro_batch_size ${MBS} \
     --micro_batches ${MICRO_BATCHES} \
     --pp_stages ${PP_STAGES} \

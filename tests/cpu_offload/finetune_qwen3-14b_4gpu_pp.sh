@@ -5,7 +5,7 @@
 # Pipeline-Parallel fine-tuning benchmark for Qwen3-14B on 4 GPUs (no CPU offload).
 #
 # Usage:
-#   bash finetune_qwen3-14b_4gpu_pp.sh [--batch_size N] [--mbs N] [--profile]
+#   bash finetune_qwen3-14b_4gpu_pp.sh [--gbs N] [--mbs N] [--profile]
 set -eo pipefail
 
 echo "========================================================"
@@ -13,24 +13,24 @@ echo "Qwen3-14B Fine-tuning with DeepSpeed PP on 4 GPU"
 echo "========================================================"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
-BATCH_SIZE=256
+GBS=256
 MBS=1
 GPUS_PER_NODE=4
 PP_STAGES=4
 PROFILE=false
 
 usage() {
-    echo "Usage: $0 [--batch_size N] [--mbs N] [--profile]"
-    echo "  --batch_size  global train batch size (default: 256)"
+    echo "Usage: $0 [--gbs N] [--mbs N] [--profile]"
+    echo "  --gbs  global train batch size (default: 256)"
     echo "  --mbs         micro-batch size per pipeline stage (default: 1)"
-    echo "                micro_batches (gas) is derived as: batch_size / mbs"
+    echo "                micro_batches (gas) is derived as: gbs / mbs"
     echo "  --profile     enable nsys profiling (default: off)"
     exit 1
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --batch_size) BATCH_SIZE="$2"; shift 2 ;;
+        --gbs) GBS="$2"; shift 2 ;;
         --mbs)        MBS="$2";        shift 2 ;;
         --profile)    PROFILE=true;    shift   ;;
         --help|-h)    usage ;;
@@ -40,12 +40,12 @@ done
 
 # ── Derive micro_batches (gas) ────────────────────────────────────────────────
 # PP: train_batch() processes micro_batches micro-batches per step.
-# global batch_size = mbs * micro_batches
-if (( MBS == 0 )) || (( BATCH_SIZE % MBS != 0 )); then
-    echo "Error: batch_size (${BATCH_SIZE}) must be divisible by mbs (${MBS})"
+# global gbs = mbs * micro_batches
+if (( MBS == 0 )) || (( GBS % MBS != 0 )); then
+    echo "Error: gbs (${GBS}) must be divisible by mbs (${MBS})"
     exit 1
 fi
-MICRO_BATCHES=$(( BATCH_SIZE / MBS ))
+MICRO_BATCHES=$(( GBS / MBS ))
 if (( MICRO_BATCHES < 1 )); then
     echo "Error: derived micro_batches (${MICRO_BATCHES}) must be >= 1"
     exit 1
@@ -80,7 +80,7 @@ if [ ! -d "${MODEL_NAME}" ] || [ -z "$(ls -A "${MODEL_NAME}" 2>/dev/null)" ]; th
 fi
 
 # ── Paths & tags ─────────────────────────────────────────────────────────────
-CONFIG_LABEL="pp-bs${BATCH_SIZE}-mbs${MBS}"
+CONFIG_LABEL="pp-bs${GBS}-mbs${MBS}"
 RUN_TAG="${MODEL_SHORT}_pp_${CONFIG_LABEL}"
 RUN_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 OUTPUT_DIR="${DS_ROOT}/results/cpu_offload/${MODEL_SHORT}/pp/${CONFIG_LABEL}_${RUN_TIMESTAMP}"
@@ -123,14 +123,14 @@ if [ "$PROFILE" = "true" ]; then
     PROFILE_FLAG="--profile --profile_start ${PROFILE_START} --profile_end ${PROFILE_END}"
 fi
 
-echo "Qwen3-14B PP | batch_size=${BATCH_SIZE} mbs=${MBS} micro_batches=${MICRO_BATCHES} (derived) profile=${PROFILE}"
+echo "Qwen3-14B PP | gbs=${GBS} mbs=${MBS} micro_batches=${MICRO_BATCHES} (derived) profile=${PROFILE}"
 echo "Output: ${OUTPUT_DIR}"
 echo "========================================================"
 
 DEEPSPEED_CMD="${NUMARUN} deepspeed --num_gpus=${GPUS_PER_NODE} ${SCRIPT_DIR}/finetune_pp.py \
     --model_name ${MODEL_NAME} \
     --lr ${LR} \
-    --batch_size ${BATCH_SIZE} \
+    --gbs ${GBS} \
     --micro_batch_size ${MBS} \
     --micro_batches ${MICRO_BATCHES} \
     --pp_stages ${PP_STAGES} \
