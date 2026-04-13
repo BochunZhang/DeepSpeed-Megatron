@@ -59,6 +59,11 @@ def load_all_results() -> List[Dict[str, Any]]:
             with open(path) as f:
                 data = json.load(f)
             data["_source"] = str(path.relative_to(DS_ROOT))
+            # Extract mode from path: results/cpu_offload/<model_name>/<mode>/...
+            rel_path = path.relative_to(RESULTS_ROOT)
+            if len(rel_path.parts) >= 2:
+                # path structure: <model_name>/<mode>/.../results.json
+                data["mode"] = rel_path.parts[1]
             records.append(data)
         except Exception as e:
             print(f"[WARN] Could not parse {path}: {e}")
@@ -157,13 +162,13 @@ def autofit(ws) -> None:
 # ── Sheet writing ─────────────────────────────────────────────────────────────
 def build_headers() -> List[str]:
     base = ["model", "mode", "mbs", "gbs", "gas", "seq_len", "gpus"]
-    tflops_cols = [f"tflops_iter{i+1}" for i in range(NUM_ITERS)]
-    time_cols = [f"iter_time_ms_iter{i+1}" for i in range(NUM_ITERS)]
     avg_cols = [
         f"avg_tflops_last{NUM_ITERS - WARMUP_ITERS}",
         f"avg_iter_time_ms_last{NUM_ITERS - WARMUP_ITERS}",
     ]
-    return base + tflops_cols + time_cols + avg_cols + ["source"]
+    tflops_cols = [f"tflops_iter{i+1}" for i in range(NUM_ITERS)]
+    time_cols = [f"iter_time_ms_iter{i+1}" for i in range(NUM_ITERS)]
+    return base + avg_cols + tflops_cols + time_cols + ["source"]
 
 
 def write_run_row(ws, row: int, rec: Dict[str, Any], headers: List[str]) -> None:
